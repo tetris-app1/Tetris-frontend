@@ -33,7 +33,7 @@ spec:
             name: frontend-config
         readinessProbe:
           httpGet:
-            path: /          # or your real health path
+            path: /          # oryour real health path
             port: 80
           initialDelaySeconds: 5
           periodSeconds: 10
