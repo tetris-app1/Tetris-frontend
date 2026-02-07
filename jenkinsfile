@@ -2,19 +2,25 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME   = "tetris-frontend"
-    IMAGE_TAG    = "${BUILD_NUMBER}"
-    FULL_IMAGE   = "${IMAGE_NAME}:${IMAGE_TAG}"
+    APP_NAME  = "tetris-frontend"
+    BUILD_DIR = "build-artifacts"
+
+    IMAGE_NAME = "tetris-frontend"
+    IMAGE_TAG  = "${BUILD_NUMBER}"
+    FULL_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
 
     AWS_REGION   = "eu-north-1"
     ECR_REGISTRY = "268811324951.dkr.ecr.eu-north-1.amazonaws.com"
     ECR_REPO     = "tetris-repo-frontend"
+
+    SONAR_HOST        = "http://192.168.163.129:9000"
+    SONAR_PROJECT_KEY = "tetris-frontend"
   }
 
   stages {
 
     /* =======================
-       Checkout APP repo
+       Checkout App Repo
        ======================= */
     stage('Checkout App Repo') {
       steps {
@@ -25,7 +31,91 @@ pipeline {
     }
 
     /* =======================
-       Build Docker Image
+       Build Artifacts
+       ======================= */
+    stage('Build Artifacts') {
+      steps {
+        sh '''
+          docker run --rm \
+            -v "$PWD:/app" \
+            -w /app \
+            node:14-slim \
+            bash -c "
+              npm install &&
+              npm install react-is &&
+              npm run build
+            "
+
+          rm -rf ${BUILD_DIR}
+          mkdir -p ${BUILD_DIR}
+          cp -r build ${BUILD_DIR}/
+        '''
+      }
+    }
+
+    /* =======================
+       OWASP Dependency Check
+       ======================= */
+    stage('OWASP Dependency Check') {
+      steps {
+        withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_KEY')]) {
+          sh '''
+            mkdir -p owasp-report
+            docker run --rm \
+              -v $WORKSPACE:/src \
+              owasp/dependency-check \
+              --scan /src \
+              --format HTML \
+              --out /src/owasp-report \
+              --nvdApiKey $NVD_KEY || true
+          '''
+        }
+      }
+    }
+
+    /* =======================
+       SonarQube Analysis
+       ======================= */
+    stage('SonarQube Analysis') {
+      steps {
+        withCredentials([string(credentialsId: 'sonar-creds', variable: 'SONAR_TOKEN')]) {
+          sh '''
+            docker run --rm \
+              --network host \
+              -v $PWD/${BUILD_DIR}:/usr/src \
+              sonarsource/sonar-scanner-cli \
+              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+              -Dsonar.sources=/usr/src/build \
+              -Dsonar.host.url=${SONAR_HOST} \
+              -Dsonar.login=$SONAR_TOKEN || true
+          '''
+        }
+      }
+    }
+
+    /* =======================
+       Push Artifacts to Nexus
+       ======================= */
+    stage('Push Artifacts to Nexus') {
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'nexus-creds',
+          usernameVariable: 'NEXUS_USER',
+          passwordVariable: 'NEXUS_PASS'
+        )]) {
+          sh '''
+            zip -r frontend-build.zip ${BUILD_DIR}
+
+            curl -u $NEXUS_USER:$NEXUS_PASS \
+              --upload-file frontend-build.zip \
+              http://192.168.163.129:8081/repository/raw-hosted/frontend-build-${BUILD_NUMBER}.zip
+          '''
+        }
+      }
+    }
+
+    /* =======================
+       Docker Build
        ======================= */
     stage('Docker Build') {
       steps {
@@ -34,9 +124,22 @@ pipeline {
     }
 
     /* =======================
-        Push Image to ECR
+       Trivy Image Scan
        ======================= */
-    stage('Push Image to ECR') {
+    stage('Trivy Image Scan') {
+      steps {
+        sh '''
+          trivy image --scanners vuln ${FULL_IMAGE} \
+            --format table \
+            --output trivy-image.txt || true
+        '''
+      }
+    }
+
+    /* =======================
+       Push Image to AWS ECR
+       ======================= */
+    stage('Push Image to AWS ECR') {
       steps {
         withCredentials([usernamePassword(
           credentialsId: 'aws-creds',
@@ -59,7 +162,7 @@ pipeline {
     }
 
     /* =======================
-      Checkout Application Repo (k8s)
+       Checkout Application Repo
        ======================= */
     stage('Checkout Application Repo') {
       steps {
@@ -72,7 +175,7 @@ pipeline {
     }
 
     /* =======================
-       Update Deployment + Push
+       Update Deployment Image
        ======================= */
     stage('Update Deployment Image') {
       steps {
@@ -83,7 +186,6 @@ pipeline {
             passwordVariable: 'GIT_PASS'
           )]) {
             sh '''
-              # دايمًا نعمل rebase قبل التعديل
               git pull --rebase origin main || true
 
               sed -i "s|image:.*|image: ${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}|g" \
@@ -103,9 +205,37 @@ pipeline {
     }
   }
 
+  /* =======================
+     Webhook Notifications
+     ======================= */
   post {
+    success {
+      sh '''
+        curl -X POST http://192.168.163.129:5678/webhook/jenkins \
+          -H "Content-Type: application/json" \
+          -d "{
+            \\"status\\": \\"SUCCESS\\",
+            \\"image\\": \\"${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}\\",
+            \\"job_name\\": \\"${JOB_NAME}\\",
+            \\"build_number\\": \\"${BUILD_NUMBER}\\"
+          }"
+      '''
+    }
+
+    failure {
+      sh '''
+        curl -X POST http://192.168.163.129:5678/webhook/jenkins \
+          -H "Content-Type: application/json" \
+          -d "{
+            \\"status\\": \\"FAILED\\",
+            \\"job_name\\": \\"${JOB_NAME}\\",
+            \\"build_number\\": \\"${BUILD_NUMBER}\\"
+          }"
+      '''
+    }
+
     always {
-      echo "Pipeline Finished Successfully"
+      echo "Pipeline Finished"
     }
   }
 }
