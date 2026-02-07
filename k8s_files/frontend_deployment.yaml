@@ -1,1 +1,11 @@
-{{ $json.fileContent }}
+{{
+(() => {
+  const yaml = Buffer.from($json.content, 'base64').toString('utf8');
+  const lines = yaml.split('\n');
+
+  // line 28 = index 27
+  lines[27] = '        image: ' + $json.body.image;
+
+  return lines.join('\n');
+})()
+}}
