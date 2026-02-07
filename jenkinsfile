@@ -109,8 +109,10 @@ pipeline {
       steps {
         sh '''
           mkdir -p security-reports/trivy
+
           trivy image ${FULL_IMAGE} \
-            --format html \
+            --format template \
+            --template "@contrib/html.tpl" \
             --output security-reports/trivy/trivy-report.html || true
         '''
       }
@@ -178,7 +180,9 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'security-reports/**', fingerprint: true
+      archiveArtifacts artifacts: 'security-reports/**',
+                       fingerprint: true,
+                       allowEmptyArchive: true
     }
 
     success {
@@ -187,11 +191,11 @@ pipeline {
           -H "Content-Type: application/json" \
           -d "{
             \\"status\\": \\"SUCCESS\\",
-            \\"image\\": \\"${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}\\",
             \\"job_name\\": \\"${JOB_NAME}\\",
             \\"build_number\\": \\"${BUILD_NUMBER}\\",
+            \\"image\\": \\"${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}\\",
             \\"build_url\\": \\"${BUILD_URL}\\",
-            \\"owasp_report\\": \\"${BUILD_URL}artifact/security-reports/owasp/index.html\\",
+            \\"owasp_report\\": \\"${BUILD_URL}artifact/security-reports/owasp/dependency-check-report.html\\",
             \\"trivy_report\\": \\"${BUILD_URL}artifact/security-reports/trivy/trivy-report.html\\"
           }"
       '''
