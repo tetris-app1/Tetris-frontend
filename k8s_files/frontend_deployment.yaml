@@ -1,1 +1,1 @@
-data-final
+{"headers":{"host":"192.168.163.129:5678","user-agent":"curl/8.12.1","accept":"*/*","content-type":"application/json","content-length":"110"},"params":{},"query":{},"body":{"image":"268811324951.dkr.ecr.eu-north-1.amazonaws.com/tetris-repo-frontend:32"},"webhookUrl":"http://localhost:5678/webhook/jenkins","executionMode":"production","image":"268811324951.dkr.ecr.eu-north-1.amazonaws.com/tetris-repo-frontend:32","fileContent":null}
