@@ -49,7 +49,7 @@ pipeline {
 
     stage('OWASP Dependency Check') {
       steps {
-        withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_KEY')]) {
+        withCredentials([string(credentialsId: 'nvd-api-keys', variable: 'NVD_KEY')]) {
           sh '''
             mkdir -p security-reports/owasp
             docker run --rm \
