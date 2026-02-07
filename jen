@@ -19,6 +19,9 @@ pipeline {
 
   stages {
 
+    /* =======================
+       Checkout App Repo
+       ======================= */
     stage('Checkout App Repo') {
       steps {
         git branch: 'main',
@@ -27,6 +30,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Build Artifacts
+       ======================= */
     stage('Build Artifacts') {
       steps {
         sh '''
@@ -47,23 +53,29 @@ pipeline {
       }
     }
 
+    /* =======================
+       OWASP Dependency Check
+       ======================= */
     stage('OWASP Dependency Check') {
       steps {
         withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_KEY')]) {
           sh '''
-            mkdir -p security-reports/owasp
+            mkdir -p owasp-report
             docker run --rm \
               -v $WORKSPACE:/src \
               owasp/dependency-check \
               --scan /src \
               --format HTML \
-              --out /src/security-reports/owasp \
+              --out /src/owasp-report \
               --nvdApiKey $NVD_KEY || true
           '''
         }
       }
     }
 
+    /* =======================
+       SonarQube Analysis
+       ======================= */
     stage('SonarQube Analysis') {
       steps {
         withCredentials([string(credentialsId: 'sonar-creds', variable: 'SONAR_TOKEN')]) {
@@ -81,6 +93,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Push Artifacts to Nexus
+       ======================= */
     stage('Push Artifacts to Nexus') {
       steps {
         withCredentials([usernamePassword(
@@ -99,23 +114,31 @@ pipeline {
       }
     }
 
+    /* =======================
+       Docker Build
+       ======================= */
     stage('Docker Build') {
       steps {
         sh 'docker build -t ${FULL_IMAGE} .'
       }
     }
 
+    /* =======================
+       Trivy Image Scan
+       ======================= */
     stage('Trivy Image Scan') {
       steps {
         sh '''
-          mkdir -p security-reports/trivy
-          trivy image ${FULL_IMAGE} \
-            --format html \
-            --output security-reports/trivy/trivy-report.html || true
+          trivy image --scanners vuln ${FULL_IMAGE} \
+            --format table \
+            --output trivy-image.txt || true
         '''
       }
     }
 
+    /* ========================
+       Push Image to AWS ECR
+       ======================= */
     stage('Push Image to AWS ECR') {
       steps {
         withCredentials([usernamePassword(
@@ -138,6 +161,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Checkout Application Repo
+       ======================= */
     stage('Checkout Application Repo') {
       steps {
         dir('application-repo') {
@@ -148,6 +174,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Update Deployment Image
+       ======================= */
     stage('Update Deployment Image') {
       steps {
         dir('application-repo') {
@@ -160,13 +189,13 @@ pipeline {
               git pull --rebase origin main || true
 
               sed -i "s|image:.*|image: ${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}|g" \
-                k8s_files/frontend_deployment.yaml
+              k8s_files/frontend_deployment.yaml
 
               git config user.email "jenkins@ci.local"
               git config user.name  "Jenkins CI"
 
               git add k8s_files/frontend_deployment.yaml
-              git commit -m "Update frontend image to ${BUILD_NUMBER}" || true
+              git commit -m "Update frontend image to ${BUILD_NUMBER}" || echo "No changes to commit"
 
               git push https://${GIT_USER}:${GIT_PASS}@github.com/tetris-app1/Application_Repo.git main
             '''
@@ -176,11 +205,10 @@ pipeline {
     }
   }
 
+  /* =======================
+     Webhook Notifications
+     ======================= */
   post {
-    always {
-      archiveArtifacts artifacts: 'security-reports/**', fingerprint: true
-    }
-
     success {
       sh '''
         curl -X POST http://192.168.163.129:5678/webhook/jenkins/frontend \
@@ -189,10 +217,7 @@ pipeline {
             \\"status\\": \\"SUCCESS\\",
             \\"image\\": \\"${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}\\",
             \\"job_name\\": \\"${JOB_NAME}\\",
-            \\"build_number\\": \\"${BUILD_NUMBER}\\",
-            \\"build_url\\": \\"${BUILD_URL}\\",
-            \\"owasp_report\\": \\"${BUILD_URL}artifact/security-reports/owasp/index.html\\",
-            \\"trivy_report\\": \\"${BUILD_URL}artifact/security-reports/trivy/trivy-report.html\\"
+            \\"build_number\\": \\"${BUILD_NUMBER}\\"
           }"
       '''
     }
@@ -204,10 +229,13 @@ pipeline {
           -d "{
             \\"status\\": \\"FAILED\\",
             \\"job_name\\": \\"${JOB_NAME}\\",
-            \\"build_number\\": \\"${BUILD_NUMBER}\\",
-            \\"build_url\\": \\"${BUILD_URL}\\"
+            \\"build_number\\": \\"${BUILD_NUMBER}\\"
           }"
       '''
+    }
+
+    always {
+      echo "Pipeline Finished"
     }
   }
 }
