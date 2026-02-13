@@ -38,7 +38,7 @@ pipeline {
           docker run --rm \
             -v "$PWD:/app" \
             -w /app \
-            node:18-alpine \
+            node:14-slim \
             sh -c "
               npm install &&
               npm run build
