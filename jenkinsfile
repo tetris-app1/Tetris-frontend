@@ -1,5 +1,5 @@
 pipeline {
-  agent any
+  agent { label 'aws-agent' }
 
   environment {
     APP_NAME  = "tetris-frontend"
@@ -9,9 +9,9 @@ pipeline {
     IMAGE_TAG  = "${BUILD_NUMBER}"
     FULL_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
 
-    AWS_REGION   = "eu-north-1"
-    ECR_REGISTRY = "268811324951.dkr.ecr.eu-north-1.amazonaws.com"
-    ECR_REPO     = "tetris-repo-frontend"
+    AWS_REGION   = "us-east-1"
+    ECR_REGISTRY = "101561167685.dkr.ecr.us-east-1.amazonaws.com"
+    ECR_REPO     = "tetris-frontend"
 
     SONAR_HOST        = "http://192.168.163.129:9000"
     SONAR_PROJECT_KEY = "tetris-frontend"
@@ -19,6 +19,9 @@ pipeline {
 
   stages {
 
+    /* =======================
+       Checkout Frontend Repo
+    ======================= */
     stage('Checkout App Repo') {
       steps {
         git branch: 'main',
@@ -27,6 +30,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Build Artifacts (Node inside Docker)
+    ======================= */
     stage('Build Artifacts') {
       steps {
         sh '''
@@ -47,6 +53,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       OWASP Dependency Check
+    ======================= */
     stage('OWASP Dependency Check') {
       steps {
         withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_KEY')]) {
@@ -64,6 +73,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       SonarQube Analysis
+    ======================= */
     stage('SonarQube Analysis') {
       steps {
         withCredentials([string(credentialsId: 'sonar-creds', variable: 'SONAR_TOKEN')]) {
@@ -81,6 +93,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Push Build to Nexus
+    ======================= */
     stage('Push Artifacts to Nexus') {
       steps {
         withCredentials([usernamePassword(
@@ -99,17 +114,22 @@ pipeline {
       }
     }
 
+    /* =======================
+       Docker Build
+    ======================= */
     stage('Docker Build') {
       steps {
         sh 'docker build -t ${FULL_IMAGE} .'
       }
     }
 
+    /* =======================
+       Trivy Image Scan
+    ======================= */
     stage('Trivy Image Scan') {
       steps {
         sh '''
           mkdir -p security-reports/trivy
-
           trivy image ${FULL_IMAGE} \
             --format template \
             --template "@contrib/html.tpl" \
@@ -118,6 +138,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Push Image to NEW AWS ECR
+    ======================= */
     stage('Push Image to AWS ECR') {
       steps {
         withCredentials([usernamePassword(
@@ -140,6 +163,9 @@ pipeline {
       }
     }
 
+    /* =======================
+       Checkout Application Repo (Helm Repo)
+    ======================= */
     stage('Checkout Application Repo') {
       steps {
         dir('application-repo') {
@@ -150,9 +176,12 @@ pipeline {
       }
     }
 
-    stage('Update Deployment Image') {
+    /* =======================
+       Update FRONTEND Tag ONLY in values.yaml
+    ======================= */
+    stage('Update Frontend Tag in Helm') {
       steps {
-        dir('application-repo') {
+        dir('application-repo/apps/tetris-apps') {
           withCredentials([usernamePassword(
             credentialsId: 'Creds-k8s',
             usernameVariable: 'GIT_USER',
@@ -161,14 +190,14 @@ pipeline {
             sh '''
               git pull --rebase origin main || true
 
-              sed -i "s|image:.*|image: ${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}|g" \
-                k8s_files/frontend_deployment.yaml
+              # Update frontend tag only (not backend, not database)
+              sed -i '/^frontend:/,/^[^ ]/ s/tag: \\".*\\"/tag: \\"${BUILD_NUMBER}\\"/' values.yaml
 
               git config user.email "jenkins@ci.local"
               git config user.name  "Jenkins CI"
 
-              git add k8s_files/frontend_deployment.yaml
-              git commit -m "Update frontend image to ${BUILD_NUMBER}" || true
+              git add values.yaml
+              git commit -m "Update frontend image to ${BUILD_NUMBER}" || echo "No changes"
 
               git push https://${GIT_USER}:${GIT_PASS}@github.com/tetris-app1/Application_Repo.git main
             '''
@@ -183,6 +212,7 @@ pipeline {
       archiveArtifacts artifacts: 'security-reports/**',
                        fingerprint: true,
                        allowEmptyArchive: true
+      echo "Frontend Pipeline Finished"
     }
 
     success {
@@ -194,9 +224,7 @@ pipeline {
             \\"job_name\\": \\"${JOB_NAME}\\",
             \\"build_number\\": \\"${BUILD_NUMBER}\\",
             \\"image\\": \\"${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}\\",
-            \\"build_url\\": \\"${BUILD_URL}\\",
-            \\"owasp_report\\": \\"${BUILD_URL}artifact/security-reports/owasp/dependency-check-report.html\\",
-            \\"trivy_report\\": \\"${BUILD_URL}artifact/security-reports/trivy/trivy-report.html\\"
+            \\"build_url\\": \\"${BUILD_URL}\\"
           }"
       '''
     }
