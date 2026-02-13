@@ -217,7 +217,7 @@ pipeline {
 
     success {
       sh '''
-        curl -X POST http://192.168.163.129:5678/webhook/jenkins/frontend \
+        curl -X POST https://loren-recommendable-nonpersistently.ngrok-free.dev/webhook/jenkins/frontend \
           -H "Content-Type: application/json" \
           -d "{
             \\"status\\": \\"SUCCESS\\",
@@ -231,7 +231,7 @@ pipeline {
 
     failure {
       sh '''
-        curl -X POST http://192.168.163.129:5678/webhook/jenkins/frontend \
+        curl -X POST https://loren-recommendable-nonpersistently.ngrok-free.dev/webhook/jenkins/frontend \
           -H "Content-Type: application/json" \
           -d "{
             \\"status\\": \\"FAILED\\",

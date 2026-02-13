@@ -9,20 +9,19 @@ pipeline {
     IMAGE_TAG  = "${BUILD_NUMBER}"
     FULL_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
 
-    AWS_REGION   = "eu-north-1"
-    ECR_REGISTRY = "268811324951.dkr.ecr.eu-north-1.amazonaws.com"
-    ECR_REPO     = "tetris-repo-frontend"
+    AWS_REGION   = "us-east-1"
+    ECR_REGISTRY = "101561167685.dkr.ecr.us-east-1.amazonaws.com"
+    ECR_REPO     = "tetris-frontend"
 
-    SONAR_HOST        = "http://192.168.163.129:9000"
-    SONAR_PROJECT_KEY = "tetris-frontend"
+    SONAR_HOST = "http://localhost:9000"
   }
 
   stages {
 
     /* =======================
-       Checkout App Repo
-       ======================= */
-    stage('Checkout App Repo') {
+       Checkout Frontend Repo
+    ======================= */
+    stage('Checkout Frontend') {
       steps {
         git branch: 'main',
             credentialsId: 'Creds-git',
@@ -31,18 +30,17 @@ pipeline {
     }
 
     /* =======================
-       Build Artifacts
-       ======================= */
+       Build Artifacts (Inside Docker - Clean)
+    ======================= */
     stage('Build Artifacts') {
       steps {
         sh '''
           docker run --rm \
             -v "$PWD:/app" \
             -w /app \
-            node:14-slim \
-            bash -c "
+            node:18-alpine \
+            sh -c "
               npm install &&
-              npm install react-is &&
               npm run build
             "
 
@@ -54,19 +52,20 @@ pipeline {
     }
 
     /* =======================
-       OWASP Dependency Check
-       ======================= */
+       OWASP Dependency Check (Frontend Security)
+    ======================= */
     stage('OWASP Dependency Check') {
       steps {
         withCredentials([string(credentialsId: 'nvd-api-key', variable: 'NVD_KEY')]) {
           sh '''
-            mkdir -p owasp-report
+            mkdir -p security-reports/owasp
+
             docker run --rm \
               -v $WORKSPACE:/src \
               owasp/dependency-check \
               --scan /src \
               --format HTML \
-              --out /src/owasp-report \
+              --out /src/security-reports/owasp \
               --nvdApiKey $NVD_KEY || true
           '''
         }
@@ -75,17 +74,17 @@ pipeline {
 
     /* =======================
        SonarQube Analysis
-       ======================= */
+    ======================= */
     stage('SonarQube Analysis') {
       steps {
         withCredentials([string(credentialsId: 'sonar-creds', variable: 'SONAR_TOKEN')]) {
           sh '''
             docker run --rm \
               --network host \
-              -v $PWD/${BUILD_DIR}:/usr/src \
+              -v $PWD:/usr/src \
               sonarsource/sonar-scanner-cli \
-              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-              -Dsonar.sources=/usr/src/build \
+              -Dsonar.projectKey=tetris-frontend \
+              -Dsonar.sources=. \
               -Dsonar.host.url=${SONAR_HOST} \
               -Dsonar.login=$SONAR_TOKEN || true
           '''
@@ -94,8 +93,8 @@ pipeline {
     }
 
     /* =======================
-       Push Artifacts to Nexus
-       ======================= */
+       Push Build to  Nexus
+    ======================= */
     stage('Push Artifacts to Nexus') {
       steps {
         withCredentials([usernamePassword(
@@ -104,10 +103,10 @@ pipeline {
           passwordVariable: 'NEXUS_PASS'
         )]) {
           sh '''
-            zip -r frontend-build.zip ${BUILD_DIR}
+            zip -r frontend-build-${BUILD_NUMBER}.zip ${BUILD_DIR}
 
             curl -u $NEXUS_USER:$NEXUS_PASS \
-              --upload-file frontend-build.zip \
+              --upload-file frontend-build-${BUILD_NUMBER}.zip \
               http://192.168.163.129:8081/repository/raw-hosted/frontend-build-${BUILD_NUMBER}.zip
           '''
         }
@@ -116,29 +115,37 @@ pipeline {
 
     /* =======================
        Docker Build
-       ======================= */
+    ======================= */
     stage('Docker Build') {
       steps {
-        sh 'docker build -t ${FULL_IMAGE} .'
+        sh '''
+          docker build -t ${FULL_IMAGE} .
+        '''
       }
     }
 
     /* =======================
        Trivy Image Scan
-       ======================= */
-    stage('Trivy Image Scan') {
+    ======================= */
+    stage('Trivy Security Scan') {
       steps {
         sh '''
-          trivy image --scanners vuln ${FULL_IMAGE} \
-            --format table \
-            --output trivy-image.txt || true
+          mkdir -p security-reports/trivy
+
+          trivy image ${FULL_IMAGE} \
+            --format table || true
+
+          trivy image ${FULL_IMAGE} \
+            --format template \
+            --template "@contrib/html.tpl" \
+            --output security-reports/trivy/trivy-report.html || true
         '''
       }
     }
 
-    /* ========================
-       Push Image to AWS ECR
-       ======================= */
+    /* =======================
+       Push Image to NEW ECR
+    ======================= */
     stage('Push Image to AWS ECR') {
       steps {
         withCredentials([usernamePassword(
@@ -162,8 +169,8 @@ pipeline {
     }
 
     /* =======================
-       Checkout Application Repo
-       ======================= */
+       Checkout Application Repo (GitOps Repo)
+    ======================= */
     stage('Checkout Application Repo') {
       steps {
         dir('application-repo') {
@@ -175,9 +182,9 @@ pipeline {
     }
 
     /* =======================
-       Update Deployment Image
-       ======================= */
-    stage('Update Deployment Image') {
+       Update FRONTEND Image in K8s Deployment
+    ======================= */
+    stage('Update Frontend Deployment Image') {
       steps {
         dir('application-repo') {
           withCredentials([usernamePassword(
@@ -188,14 +195,14 @@ pipeline {
             sh '''
               git pull --rebase origin main || true
 
-              sed -i "s|image:.*|image: ${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}|g" \
-              k8s_files/frontend_deployment.yaml
+              sed -i "s|image:.*tetris-frontend:.*|image: ${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}|g" \
+              apps/k8sfilesapp1/frontend_deployment.yaml
 
               git config user.email "jenkins@ci.local"
               git config user.name  "Jenkins CI"
 
-              git add k8s_files/frontend_deployment.yaml
-              git commit -m "Update frontend image to ${BUILD_NUMBER}" || echo "No changes to commit"
+              git add apps/k8sfilesapp1/frontend_deployment.yaml
+              git commit -m "Update frontend image to ${BUILD_NUMBER}" || echo "No changes"
 
               git push https://${GIT_USER}:${GIT_PASS}@github.com/tetris-app1/Application_Repo.git main
             '''
@@ -205,37 +212,37 @@ pipeline {
     }
   }
 
-  /* =======================
-     Webhook Notifications
-     ======================= */
   post {
+    always {
+      archiveArtifacts artifacts: 'security-reports/**',
+                       fingerprint: true,
+                       allowEmptyArchive: true
+      echo "Frontend Pipeline Finished (Local + OWASP + Sonar + Trivy)"
+    }
+
     success {
       sh '''
-        curl -X POST http://192.168.163.129:5678/webhook/jenkins/frontend \
+        curl -X POST http://localhost:5678/webhook/jenkins/frontend \
           -H "Content-Type: application/json" \
           -d "{
             \\"status\\": \\"SUCCESS\\",
-            \\"image\\": \\"${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}\\",
             \\"job_name\\": \\"${JOB_NAME}\\",
-            \\"build_number\\": \\"${BUILD_NUMBER}\\"
-          }"
+            \\"build_number\\": \\"${BUILD_NUMBER}\\",
+            \\"image\\": \\"${ECR_REGISTRY}/${ECR_REPO}:${BUILD_NUMBER}\\"
+          }" || true
       '''
     }
 
     failure {
       sh '''
-        curl -X POST http://192.168.163.129:5678/webhook/jenkins/frontend \
+        curl -X POST http://localhost:5678/webhook/jenkins/frontend \
           -H "Content-Type: application/json" \
           -d "{
             \\"status\\": \\"FAILED\\",
             \\"job_name\\": \\"${JOB_NAME}\\",
             \\"build_number\\": \\"${BUILD_NUMBER}\\"
-          }"
+          }" || true
       '''
-    }
-
-    always {
-      echo "Pipeline Finished"
     }
   }
 }
