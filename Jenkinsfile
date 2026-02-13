@@ -39,8 +39,9 @@ pipeline {
             -v "$PWD:/app" \
             -w /app \
             node:14-slim \
-            sh -c "
+            bash -c "
               npm install &&
+              npm install react-is &&
               npm run build
             "
 
